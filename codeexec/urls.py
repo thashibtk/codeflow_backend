@@ -1,6 +1,13 @@
-from django.urls import path
-from .views import CodeExecutionView
+
+# codeexec/urls.py
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import CodeExecutionViewSet, execute_code_view
+
+router = DefaultRouter()
+router.register(r'executions', CodeExecutionViewSet, basename='code-execution')
 
 urlpatterns = [
-    path("execute/", CodeExecutionView.as_view(), name="execute_code"),
+    path('', include(router.urls)),
+    path('execute/', execute_code_view, name='execute-code'),
 ]

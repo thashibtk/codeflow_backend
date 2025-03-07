@@ -38,8 +38,14 @@ class File(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="files")
     name = models.CharField(max_length=255)
     is_folder = models.BooleanField(default=False)
-    content = models.TextField(blank=True, null=True)  # Only for files
+    content = models.TextField(blank=True, null=True) 
     parent_folder = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="children")
+
+    class Meta:
+        unique_together = ("project", "parent_folder", "name")  # Ensures unique name per project or parent folder
 
     def __str__(self):
         return f"{'📁' if self.is_folder else '📄'} {self.name}"
+
+    
+    

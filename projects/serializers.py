@@ -1,5 +1,11 @@
 from rest_framework import serializers
 from .models import Project, ProjectCollaborator, File
+from users.models import CustomUser 
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'email', 'full_name']
 
 class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
@@ -8,11 +14,16 @@ class ProjectSerializer(serializers.ModelSerializer):
         read_only_fields = ["creator", "project_code", "created_at"]
 
 class ProjectCollaboratorSerializer(serializers.ModelSerializer):
+    user_details = UserSerializer(source='user', read_only=True)
+    is_owner = serializers.SerializerMethodField()
+    
     class Meta:
         model = ProjectCollaborator
-        fields = "__all__"
+        fields = ['id', 'permission', 'project', 'user', 'user_details', 'is_owner']
+    
+    def get_is_owner(self, obj):
+        return obj.user == obj.project.creator
 
-# 📂 Serializer for Files/Folders
 class FileSerializer(serializers.ModelSerializer):
     class Meta:
         model = File

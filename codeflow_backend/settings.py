@@ -1,4 +1,5 @@
 from datetime import timedelta
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -104,6 +105,14 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'codeflow_backend.wsgi.application'
+
+
+import environ
+
+env = environ.Env()
+environ.Env.read_env()
+
+DAILY_API_KEY = env("DAILY_API_KEY", default=None)
 
 
 # Database

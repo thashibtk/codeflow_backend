@@ -11,6 +11,13 @@ class UserSerializer(serializers.ModelSerializer):
         extra_kwargs = {"password": {"write_only": True}}
 
     def validate_email(self, value):
+        user = self.context.get('request').user if self.context.get('request') else None
+        
+        # If this is an update (existing user) and they're not changing their email
+        if self.instance and self.instance.email == value:
+            return value
+            
+        # Check if email exists for another user
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("A user with this email already exists.")
         return value
@@ -18,6 +25,21 @@ class UserSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         user = User.objects.create_user(**validated_data)
         return user
+        
+    def update(self, instance, validated_data):
+        # Handle password separately
+        password = validated_data.pop('password', None)
+        
+        # Update other fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+            
+        # Set password if provided
+        if password:
+            instance.set_password(password)
+            
+        instance.save()
+        return instance
      
 
 class LoginSerializer(serializers.Serializer):

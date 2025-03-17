@@ -2,42 +2,124 @@ from rest_framework import viewsets, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
-
-from meetings import serializers
 from .models import Project, ProjectCollaborator, File
 from .serializers import ProjectSerializer, ProjectCollaboratorSerializer, FileSerializer
 from django.contrib.auth import get_user_model
 from rest_framework import status
+from django.db.models import Q
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import serializers  # ✅ Add this import
+
 
 User = get_user_model()
 
 # 📂 Project ViewSet
 class ProjectViewSet(viewsets.ModelViewSet):
-    queryset = Project.objects.all()
     serializer_class = ProjectSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        return Project.objects.filter(
+            Q(creator=user) | Q(collaborators__user=user)
+        ).distinct()
 
     def perform_create(self, serializer):
         project = serializer.save(creator=self.request.user)
         ProjectCollaborator.objects.create(project=project, user=self.request.user, permission="edit")
 
-# 📂 Add Collaborator ViewSet
-class AddCollaboratorView(viewsets.ViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+    def update(self, request, *args, **kwargs):
+        project = self.get_object()
+        user = request.user
 
-    def create(self, request, pk=None):
-        project = get_object_or_404(Project, pk=pk)
+        if project.creator == user:
+            return super().update(request, *args, **kwargs)
+
+        collaborator = ProjectCollaborator.objects.filter(project=project, user=user).first()
+        if not collaborator or collaborator.permission != "edit":
+            return Response({"error": "You do not have permission to edit this project"}, status=status.HTTP_403_FORBIDDEN)
+
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        project = self.get_object()
+
         if project.creator != request.user:
-            return Response({"error": "Only the creator can add collaborators"}, status=403)
+            return Response({"error": "Only the project creator can delete this project"}, status=status.HTTP_403_FORBIDDEN)
+
+        return super().destroy(request, *args, **kwargs)
         
+
+class CollaboratorViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+    
+    def list(self, request, project_id=None):
+        """ Retrieve all collaborators of a project """
+        project = get_object_or_404(Project, id=project_id)
+
+        if project.creator != request.user and not ProjectCollaborator.objects.filter(project=project, user=request.user).exists():
+            return Response({"error": "You do not have permission to view collaborators"}, status=status.HTTP_403_FORBIDDEN)
+
+        collaborators = ProjectCollaborator.objects.filter(project=project)
+        serializer = ProjectCollaboratorSerializer(collaborators, many=True)
+        
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    def create(self, request, project_id=None):  
+        project = get_object_or_404(Project, id=project_id)
+
+        if project.creator != request.user:
+            return Response({"error": "Only the creator can add collaborators"}, status=status.HTTP_403_FORBIDDEN)
+
         user_email = request.data.get("email")
         permission = request.data.get("permission", "view")
 
-        user = get_object_or_404(User, email=user_email)
-        ProjectCollaborator.objects.create(project=project, user=user, permission=permission)
+        if not user_email:
+            return Response({"error": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({"message": "Collaborator added successfully"})
+        user = get_object_or_404(User, email=user_email)
+
+        if ProjectCollaborator.objects.filter(project=project, user=user).exists():
+            return Response({"error": "User is already a collaborator"}, status=status.HTTP_400_BAD_REQUEST)
+
+        collaborator = ProjectCollaborator.objects.create(project=project, user=user, permission=permission)
+        serializer = ProjectCollaboratorSerializer(collaborator)
+        
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    def update(self, request, project_id=None, collaborator_id=None):
+        project = get_object_or_404(Project, id=project_id)
+
+        if project.creator != request.user:
+            return Response({"error": "Only the creator can change collaborator permissions"}, 
+                            status=status.HTTP_403_FORBIDDEN)
+        
+        collaborator = get_object_or_404(ProjectCollaborator, id=collaborator_id, project=project)
+        
+        # Get the new permission from request data
+        permission = request.data.get("permission")
+        if not permission or permission not in ["view", "edit"]:
+            return Response({"error": "Valid permission (view/edit) is required"}, 
+                            status=status.HTTP_400_BAD_REQUEST)
+        
+        collaborator.permission = permission
+        collaborator.save()
+        
+        serializer = ProjectCollaboratorSerializer(collaborator)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    def destroy(self, request, project_id=None, collaborator_id=None):
+        """ Remove a collaborator from a project """
+        project = get_object_or_404(Project, id=project_id)
+
+        if project.creator != request.user:
+            return Response({"error": "Only the creator can remove collaborators"}, status=status.HTTP_403_FORBIDDEN)
+        
+        collaborator = get_object_or_404(ProjectCollaborator, id=collaborator_id, project=project)
+        collaborator.delete()
+        
+        return Response({"message": "Collaborator removed successfully"}, status=status.HTTP_204_NO_CONTENT)
 
 
 class FileViewSet(viewsets.ModelViewSet):
@@ -52,30 +134,40 @@ class FileViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         project_id = self.kwargs.get("project_id")
-        parent_folder = self.request.data.get("parent_folder", None)
-        name = self.request.data.get("name")
+        project = get_object_or_404(Project, id=project_id)
+        user = self.request.user
 
-        # Check if a file/folder with the same name exists in the same parent folder
-        if File.objects.filter(project_id=project_id, parent_folder=parent_folder, name=name).exists():
-            raise serializers.ValidationError({"name": "A file or folder with this name already exists in this location."})
+        # Check if user has 'edit' permission
+        collaborator = ProjectCollaborator.objects.filter(project=project, user=user).first()
+        if not collaborator or collaborator.permission != "edit":
+            raise serializers.ValidationError({"error": "You do not have permission to add files."})
 
-        serializer.save(project_id=project_id)
+        try:
+            serializer.save(project=project)
+        except Exception as e:
+            print("❌ Error while creating file:", str(e))  # Logs the actual error
+            raise serializers.ValidationError({"error": str(e)})
+
 
     def perform_update(self, serializer):
         instance = self.get_object()
-        new_name = self.request.data.get("name", instance.name)
-        parent_folder = instance.parent_folder
+        user = self.request.user
 
-        # Check if renaming to an existing name
-        if File.objects.filter(project=instance.project, parent_folder=parent_folder, name=new_name).exclude(id=instance.id).exists():
-            raise serializers.ValidationError({"name": "A file or folder with this name already exists in this location."})
+        # Check if user has 'edit' permission
+        collaborator = ProjectCollaborator.objects.filter(project=instance.project, user=user).first()
+        if not collaborator or collaborator.permission != "edit":
+            raise serializers.ValidationError({"error": "You do not have permission to edit this file."})
 
         serializer.save()
 
     def perform_destroy(self, instance):
-        """ Recursively delete all child files/folders when deleting a folder """
-        if instance.is_folder:
-            self._delete_folder_contents(instance)
+        user = self.request.user
+
+        # Check if user has 'edit' permission
+        collaborator = ProjectCollaborator.objects.filter(project=instance.project, user=user).first()
+        if not collaborator or collaborator.permission != "edit":
+            raise serializers.ValidationError({"error": "You do not have permission to delete this file."})
+
         instance.delete()
 
     def _delete_folder_contents(self, folder):
@@ -97,20 +189,11 @@ class FileViewSet(viewsets.ModelViewSet):
         })
 
 
-# 📄 New File Content APIView
 class FileContentView(APIView):
-    """
-    API view for handling file content operations.
-    Supports both GET for retrieval and PUT for update.
-    """
     permission_classes = [permissions.IsAuthenticated]
     
-    def get(self, request, project_id, pk):
-        """
-        Retrieve file content
-        """
-        file_instance = get_object_or_404(File, id=pk, project_id=project_id)
-        
+    def get(self, request, project_id, file_id):
+        file_instance = get_object_or_404(File, id=file_id, project_id=project_id)
         return Response({
             "id": file_instance.id,
             "name": file_instance.name,
@@ -119,27 +202,22 @@ class FileContentView(APIView):
             "is_folder": file_instance.is_folder
         })
     
-    def put(self, request, project_id, pk):
-        """
-        Update file content
-        """
-        file_instance = get_object_or_404(File, id=pk, project_id=project_id)
-        
-        # Extract content from request
+    def put(self, request, project_id, file_id):
+        file_instance = get_object_or_404(File, id=file_id, project_id=project_id)
+        user = request.user
+
+        # Check if user has 'edit' permission
+        collaborator = ProjectCollaborator.objects.filter(project=file_instance.project, user=user).first()
+        if not collaborator or collaborator.permission != "edit":
+            return Response({"error": "You do not have permission to edit this file."}, status=status.HTTP_403_FORBIDDEN)
+
         content = request.data.get('content')
         if content is None:
-            return Response(
-                {"error": "Content field is required"}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Update the file content
+            return Response({"error": "Content field is required"}, status=status.HTTP_400_BAD_REQUEST)
+
         file_instance.content = content
         file_instance.save()
-        
-        # Log successful update
-        print(f"✅ Updated content for file '{file_instance.name}' (ID: {file_instance.id})")
-        
+
         return Response({
             "id": file_instance.id,
             "name": file_instance.name,

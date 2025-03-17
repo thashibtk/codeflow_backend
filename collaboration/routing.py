@@ -1,7 +1,6 @@
-# collaboration/routing.py
 from django.urls import re_path
-from . import consumers
+from collaboration.consumers import CollaboratorConsumer
 
 websocket_urlpatterns = [
-    re_path(r'ws/collaborators/(?P<project_id>[\w-]+)/$', consumers.CollaboratorConsumer.as_asgi()),
+    re_path(r"ws/collaborators/(?P<project_id>[\w-]+)/$", CollaboratorConsumer.as_asgi()),
 ]

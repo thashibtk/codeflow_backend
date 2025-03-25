@@ -5,6 +5,7 @@ urlpatterns = [
     # Project endpoints
     path('', ProjectViewSet.as_view({'get': 'list', 'post': 'create'})),
     path('<uuid:pk>/', ProjectViewSet.as_view({'get': 'retrieve', 'put': 'update', 'delete': 'destroy'})),
+    path('join/', ProjectViewSet.as_view({'post': 'join_project'}), name='join-project'),  # Add this
 
     # Collaborator endpoints
     path('<uuid:project_id>/collaborators/', 

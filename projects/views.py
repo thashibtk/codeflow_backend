@@ -49,6 +49,29 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return Response({"error": "Only the project creator can delete this project"}, status=status.HTTP_403_FORBIDDEN)
 
         return super().destroy(request, *args, **kwargs)
+    
+    @action(detail=False, methods=["post"], url_path="join")
+    def join_project(self, request):
+        """ Allow users to join a project using a project code """
+        project_code = request.data.get("project_code")
+
+        if not project_code:
+            return Response({"error": "Project code is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        project = Project.objects.filter(project_code=project_code).first()
+
+        if not project:
+            return Response({"error": "Invalid project code"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Ensure the user is not already a collaborator
+        user = request.user
+        if ProjectCollaborator.objects.filter(project=project, user=user).exists():
+            return Response({"error": "You are already a collaborator"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Add user as a collaborator
+        ProjectCollaborator.objects.create(project=project, user=user, permission="view")
+
+        return Response({"message": "Joined project successfully"}, status=status.HTTP_200_OK)
         
 
 class CollaboratorViewSet(viewsets.ViewSet):
@@ -110,17 +133,51 @@ class CollaboratorViewSet(viewsets.ViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
     
     def destroy(self, request, project_id=None, collaborator_id=None):
-        """ Remove a collaborator from a project """
-        project = get_object_or_404(Project, id=project_id)
-
-        if project.creator != request.user:
-            return Response({"error": "Only the creator can remove collaborators"}, status=status.HTTP_403_FORBIDDEN)
-        
-        collaborator = get_object_or_404(ProjectCollaborator, id=collaborator_id, project=project)
-        collaborator.delete()
-        
-        return Response({"message": "Collaborator removed successfully"}, status=status.HTTP_204_NO_CONTENT)
-
+        try:
+            project = get_object_or_404(Project, id=project_id)
+            collaborator = get_object_or_404(ProjectCollaborator, id=collaborator_id, project=project)
+            
+            # Store debug info in a dictionary
+            debug_info = {
+                "project_id": project.id,
+                "project_creator_id": project.creator.id,
+                "request_user_id": request.user.id,
+                "collaborator_id": collaborator.id,
+                "collaborator_user_id": collaborator.user.id,
+                "is_self_removal": collaborator.user.id == request.user.id,
+                "is_creator": project.creator.id == request.user.id
+            }
+            
+            # IMPORTANT: Check for self removal BEFORE checking for creator
+            if collaborator.user.id == request.user.id:
+                collaborator.delete()
+                return Response({
+                    "message": "You have left the project successfully",
+                    "debug": debug_info
+                }, status=status.HTTP_204_NO_CONTENT)
+            
+            # If not self removal, only creator can remove others
+            if project.creator.id == request.user.id:
+                collaborator.delete()
+                return Response({
+                    "message": "Collaborator removed successfully",
+                    "debug": debug_info
+                }, status=status.HTTP_204_NO_CONTENT)
+            
+            # Otherwise, permission denied
+            return Response({
+                "error": "You do not have permission to remove this collaborator",
+                "debug": debug_info
+            }, status=status.HTTP_403_FORBIDDEN)
+    
+        except Exception as e:
+            # Return details about any exceptions
+            return Response({
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "request_path": request.path,
+                "request_user_id": request.user.id if hasattr(request, 'user') else None
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class FileViewSet(viewsets.ModelViewSet):
     serializer_class = FileSerializer
